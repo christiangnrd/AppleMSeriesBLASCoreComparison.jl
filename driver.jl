@@ -2,8 +2,8 @@
 #
 # Driver for the OpenBLAS DGEMM efficiency/performance core sweep on Apple silicon.
 #
-# Extended to support any number of perf levels (M1/M2 have 2: Performance + Efficiency;
-# M6 has 3: Performance + Power + Efficiency).  For each level, measures isolated
+# Extended to support any number of perf levels (M1–M4 have 2: Performance + Efficiency;
+# M5+ has 3: Super + Performance + Efficiency).  For each level, measures isolated
 # throughput by setting OPENBLAS_NUM_THREADS to that level's core count, and for
 # E-cores uses background QoS to confine the process.
 #
@@ -53,7 +53,7 @@ end
 
 Read the Apple silicon core topology.  `hw.perflevels` reports the number of
 tiers; levels are indexed from 0 (fastest) upward.  Each level gives its name
-(Performance, Power, Efficiency) and logical core count.
+(Super, Performance, Efficiency) and logical core count.
 
 Returns a list of (index, name, cores) tuples in order from fastest to slowest.
 """

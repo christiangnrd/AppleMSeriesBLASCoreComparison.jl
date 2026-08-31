@@ -1,7 +1,7 @@
-# OpenBLAS DGEMM on Apple Silicon: P-cores vs E-cores (and Power-cores on M6+)
+# OpenBLAS DGEMM on Apple Silicon: P-cores vs E-cores (and Super-cores on M5+)
 
 Measures how well OpenBLAS DGEMM scales on each performance tier of Apple M-series
-chips. Supports any number of heterogeneous core levels (M1/M2: 2 levels; M6+: 3
+chips. Supports any number of heterogeneous core levels (M1–M4: 2 levels; M6: 3
 levels) and enables side-by-side comparison across different chip generations.
 
 # Current Results
@@ -22,8 +22,8 @@ threads from a previous point interfere.
 
 | Mode | Launch | Core Placement |
 |---|---|---|
+| `super` (M5+) | `julia ...` (Super thread count) | Super cluster only, normal QoS |
 | `performance` | `julia ...` (8 threads max) | Performance cluster only, normal QoS |
-| `power` (M6+) | `julia ...` (Power thread count) | Power cluster only, normal QoS |
 | `efficiency` | `taskpolicy -b julia ...` (2 threads max) | Efficiency cluster only, background QoS |
 
 ## Usage
@@ -57,7 +57,7 @@ julia --project=. collate_results.jl results-*.csv --level=Performance
 
 **collate_results.jl:**
 - `--out=base` — output filename base (default: dgemm_collated)
-- `--level=LEVEL` — filter to one level only (Performance, Power, Efficiency)
+- `--level=LEVEL` — filter to one level only (Super, Performance, Efficiency)
 
 ### Files
 
@@ -103,8 +103,8 @@ throughput curves for each mode and level, enabling:
 
 - **Architecture comparison**: How do M1 Pro, M1 Max, M6, M6 Pro, M6 Max differ
   in real DGEMM performance?
-- **Core-type efficiency**: Does M6's Power tier deliver better efficiency-core
-  throughput than M1's boost?
+- **Core-type efficiency**: Does M5's Performance tier deliver better
+  throughput than M1's P-cores?
 - **Scaling patterns**: Do all Apple chips have the same cliff at the P-core
   saturation point?
 
@@ -125,7 +125,7 @@ with different parameters without re-measuring.
 **Why QoS, not thread affinity?** macOS has no public thread-affinity API (no
 CPU_SET equivalent). QoS is the documented way to hint core placement, and
 background QoS reliably confines threads to the efficiency cluster. It's not
-perfect (you can't request Power-core-only placement), but it's what's available.
+perfect (on M5+ you can't isolate the Performance tier), but it's what's available.
 
 **Why multiple trials?** DGEMM performance varies slightly due to cache effects,
 frequency scaling, and thermal throttling. We report the best trial (peak

@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 #
-# Worker process for the E-core/P-core/Power-core DGEMM sweep.
+# Worker process for the E-core/P-core/Super-core DGEMM sweep.
 #
 # Runs a single (nthreads, QoS-mode, perf-level) measurement point and prints
 # one CSV row on stdout.  It is launched by driver.jl, optionally wrapped in
@@ -10,10 +10,10 @@
 #   BENCH_THREADS       number of OpenBLAS threads to use
 #   BENCH_N             DGEMM matrix dimension
 #   BENCH_TRIALS        number of timed trials (we report best and median)
-#   BENCH_MODE          label for the mode (default, efficiency, power, performance)
+#   BENCH_MODE          label for the mode (default, efficiency, performance, super)
 #   BENCH_CHIP          chip ID for result collation (e.g. "Apple M1")
 #   BENCH_LEVEL_INDEX   perf level index (0=fastest, 1=next, ...)
-#   BENCH_LEVEL_NAME    perf level name (Performance, Power, Efficiency)
+#   BENCH_LEVEL_NAME    perf level name (Super, Performance, Efficiency)
 
 using LinearAlgebra
 using Printf
