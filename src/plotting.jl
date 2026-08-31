@@ -5,7 +5,12 @@ using Plots
 using DelimitedFiles
 
 # ---------------------------------------------------------------- palette
-const SERIES_COLOR  = ["#2a78d6", "#eb6834"]  # blue for performance, orange for efficiency
+const LEVEL_COLOR = Dict(
+    "Super"       => "#4a3aa7",  # purple
+    "Performance" => "#2a78d6",  # blue
+    "Efficiency"  => "#eb6834",  # orange
+)
+level_color(level) = get(LEVEL_COLOR, level, "#1baf7a")  # green for unknown tiers
 const SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 const INK   = "#0b0b0b"
 const INK2  = "#52514e"
@@ -14,11 +19,10 @@ const GRIDC = "#d8d7d2"
 """
     plot_results(infile="results.csv"; outbase="dgemm_cores")
 
-Plot single-chip DGEMM results: combined view with efficiency and performance
-overlaid.
+Plot single-chip DGEMM results: combined view with all perf levels overlaid.
 
-Left: GFLOPS throughput with both core types on same plot, with ideal speedup
-references.  Right: parallel speedup with both core types, with perfect scaling
+Left: GFLOPS throughput with all core types on same plot, with ideal speedup
+references.  Right: parallel speedup with all core types, with perfect scaling
 reference.  Writes `outbase*".png"` and `outbase*".svg"` and prints a summary
 table; returns the figure.
 """
@@ -69,7 +73,7 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
 
     # Create two main subplots
     plt_gflops = plot(size=(700, 400), legend=:topleft,
-                      title="DGEMM Throughput: Efficiency vs Performance Cores",
+                      title="DGEMM Throughput by Core Type",
                       ylabel="GFLOPS (log scale)", xlabel="threads",
                       grid=true, gridcolor=GRIDC, gridalpha=1.0,
                       foreground_color_axis=GRIDC, foreground_color_border=GRIDC,
@@ -109,8 +113,7 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
 
             speedup = y ./ y[1]
 
-            # Use performance=blue, efficiency=orange
-            c = level == "Performance" ? SERIES_COLOR[1] : SERIES_COLOR[2]
+            c = level_color(level)
 
             peak_gflops = maximum(y)
             baselines["$level"] = y[1]
@@ -130,7 +133,7 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
     # Add ideal speedup lines to GFLOPS plot (dashed)
     max_threads = maximum(threads_col)
     for (level, baseline) in baselines
-        c = level == "Performance" ? SERIES_COLOR[1] : SERIES_COLOR[2]
+        c = level_color(level)
         ideal_gflops = baseline .* (1:max_threads)
         plot!(plt_gflops, 1:max_threads, ideal_gflops, color=c, linewidth=1.5,
               linestyle=:dash, alpha=0.5, label="")

@@ -1,7 +1,7 @@
 #!/usr/bin/env julia
 #
-# Plot single-chip DGEMM results: combined view with efficiency and performance
-# overlaid.  Thin CLI wrapper around AppleMSeriesBLASCoreComparison.plot_results.
+# Plot single-chip DGEMM results: combined view with all perf levels overlaid.
+# Thin CLI wrapper around AppleMSeriesBLASCoreComparison.plot_results.
 #
 # Usage: julia --project=. plot_results.jl [--in=results.csv] [--out=dgemm_cores]
 
