@@ -1,0 +1,11 @@
+chip,level_index,level_name,mode,threads,n,trials,gflops_best,gflops_median,wall_s
+
+Apple M1,1,Efficiency,efficiency,1,2048,5,7.6775,7.3336,14.359
+Apple M1,1,Efficiency,efficiency,2,2048,5,14.6005,13.5773,7.655
+Apple M1,1,Efficiency,efficiency,3,2048,5,19.5061,19.1442,5.783
+Apple M1,1,Efficiency,efficiency,4,2048,5,22.3593,21.4492,4.987
+
+Apple M1,0,Performance,performance,1,2048,5,48.3154,48.2831,2.173
+Apple M1,0,Performance,performance,2,2048,5,94.0277,93.8374,1.156
+Apple M1,0,Performance,performance,3,2048,5,132.1717,131.9337,0.836
+Apple M1,0,Performance,performance,4,2048,5,174.7735,174.0472,0.648

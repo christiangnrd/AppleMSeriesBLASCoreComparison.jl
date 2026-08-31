@@ -1,0 +1,13 @@
+chip,level_index,level_name,mode,threads,n,trials,gflops_best,gflops_median,wall_s
+
+Apple M1 Pro,1,Efficiency,efficiency,1,2048,3,6.4105,5.7004,12.552
+Apple M1 Pro,1,Efficiency,efficiency,2,2048,3,12.2968,12.2439,6.594
+
+Apple M1 Pro,0,Performance,performance,1,2048,3,46.4434,45.7218,1.688
+Apple M1 Pro,0,Performance,performance,2,2048,3,92.6094,92.2452,0.824
+Apple M1 Pro,0,Performance,performance,3,2048,3,135.3052,134.6124,0.581
+Apple M1 Pro,0,Performance,performance,4,2048,3,182.0455,172.3790,0.538
+Apple M1 Pro,0,Performance,performance,5,2048,3,212.9701,199.0650,0.466
+Apple M1 Pro,0,Performance,performance,6,2048,3,241.4577,230.9971,0.410
+Apple M1 Pro,0,Performance,performance,7,2048,3,283.3859,283.2502,0.324
+Apple M1 Pro,0,Performance,performance,8,2048,3,318.9547,293.5969,0.327
