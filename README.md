@@ -4,6 +4,10 @@ Measures how well OpenBLAS DGEMM scales on each performance tier of Apple M-seri
 chips. Supports any number of heterogeneous core levels (M1/M2: 2 levels; M6+: 3
 levels) and enables side-by-side comparison across different chip generations.
 
+# Current Results
+
+![dgemm_collated_by_chip.svg](./dgemm_collated_by_chip.svg)
+
 ## Core Placement Mechanism
 
 macOS exposes no thread-affinity API, so threads cannot be pinned to a specific
