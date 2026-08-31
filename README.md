@@ -47,6 +47,17 @@ julia --project=. collate_results.jl results-m1pro.csv results-m6max.csv
 julia --project=. collate_results.jl results-*.csv --level=Performance
 ```
 
+The scripts are thin wrappers around the `AppleMSeriesBLASCoreComparison`
+package, so everything is also available as function calls:
+
+```julia
+using AppleMSeriesBLASCoreComparison
+
+sweep(n=4096, trials=9, out="results-m1pro.csv")   # run the sweep (+ plot)
+plot_results("results.csv"; outbase="dgemm_cores")
+collate_results(["results-m1pro.csv", "results-m6max.csv"]; level="Performance")
+```
+
 ### Options
 
 **driver.jl:**
@@ -63,8 +74,9 @@ julia --project=. collate_results.jl results-*.csv --level=Performance
 
 | File | Purpose |
 |---|---|
-| `driver.jl` | Orchestrates the sweep; discovers topology, generates modes, launches workers |
-| `bench_worker.jl` | One measurement point: times DGEMM, outputs CSV row |
+| `src/` | The package: `sweep`, `topology`, `make_modes`, `dgemm_gflops`, `plot_results`, `collate_results` |
+| `driver.jl` | CLI wrapper for `sweep`: discovers topology, generates modes, launches workers |
+| `bench_worker.jl` | One measurement point: times DGEMM, outputs CSV row (wraps `src/worker.jl`) |
 | `plot_results.jl` | Single-chip results: throughput + speedup vs 1 thread |
 | `collate_results.jl` | Multi-chip collation: side-by-side comparison plots |
 | `results.csv` | Output from driver.jl |
