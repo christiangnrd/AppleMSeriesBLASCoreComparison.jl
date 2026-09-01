@@ -5,12 +5,31 @@ using Plots
 using DelimitedFiles
 
 # ---------------------------------------------------------------- palette
+# Tier hues are fixed per name (a chip's plot never repaints when a tier is
+# absent) and taken from one validated categorical set; "All" is the whole
+# machine rather than a tier, so it gets a neutral and a different marker.
 const LEVEL_COLOR = Dict(
-    "Super"       => "#b0399a",  # magenta
+    "Super"       => "#e34948",  # red
     "Performance" => "#2a78d6",  # blue
     "Efficiency"  => "#eb6834",  # orange
+    "All"         => "#6e6d69",  # grey
 )
-level_color(level) = get(LEVEL_COLOR, level, "#1baf7a")  # green for unknown tiers
+level_color(level)  = get(LEVEL_COLOR, level, "#1baf7a")  # aqua for unknown tiers
+level_marker(level) = level == "All" ? :diamond : :circle
+
+# Tier order for legends and panels: fastest first, the whole machine last.
+const LEVEL_ORDER = Dict("Super" => 0, "Performance" => 1, "Efficiency" => 2, "All" => 9)
+level_rank(level) = (get(LEVEL_ORDER, level, 5), level)
+
+# Plain-number ticks for a log axis (1-2-3-5-7 sequence) instead of 10^x labels.
+function log_ticks(lo, hi)
+    ticks = Float64[]
+    for e in floor(Int, log10(lo)):ceil(Int, log10(hi)), m in (1, 2, 3, 5, 7)
+        t = m * 10.0^e
+        lo <= t <= hi && push!(ticks, t)
+    end
+    return ticks
+end
 const SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 const INK   = "#0b0b0b"
 const INK2  = "#52514e"
@@ -19,11 +38,12 @@ const GRIDC = "#d8d7d2"
 """
     plot_results(infile="results.csv"; outbase="dgemm_cores")
 
-Plot single-chip DGEMM results: combined view with all perf levels overlaid.
+Plot single-chip DGEMM results: combined view with all perf levels overlaid,
+plus the `All` (whole machine) curve when the sweep recorded one.
 
 Left: GFLOPS throughput with all core types on same plot, with ideal speedup
-references.  Right: parallel speedup with all core types, with perfect scaling
-reference.  Writes `outbase*".png"` and `outbase*".svg"` and prints a summary
+references and, on the `All` curve, a marker where each tier's cores run out.
+Right: parallel speedup with all core types, with perfect scaling reference.  Writes `outbase*".png"` and `outbase*".svg"` and prints a summary
 table; returns the figure.
 """
 function plot_results(infile::AbstractString="results.csv"; outbase::AbstractString="dgemm_cores")
@@ -33,21 +53,33 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
     raw, hdr = readdlm(infile, ',', header=true, String)
     cols = Dict(strip(h) => i for (i, h) in enumerate(vec(hdr)))
     chip_col    = raw[:, cols["chip"]]
+    lindex_col  = raw[:, cols["level_index"]]
     level_col   = raw[:, cols["level_name"]]
     mode_col    = raw[:, cols["mode"]]
     threads_col = parse.(Int, raw[:, cols["threads"]])
     gflops_col  = parse.(Float64, raw[:, cols["gflops_best"]])
+    median_col  = parse.(Float64, raw[:, cols["gflops_median"]])
 
     # Filter out blank rows
     valid = vec(chip_col .!= "")
     chip_col    = chip_col[valid]
+    lindex_col  = parse.(Int, lindex_col[valid])
     level_col   = level_col[valid]
     mode_col    = mode_col[valid]
     threads_col = threads_col[valid]
     gflops_col  = gflops_col[valid]
+    median_col  = median_col[valid]
 
-    levels = sort(unique(level_col))
+    levels = sort(unique(level_col), by=level_rank)
     modes_per_level = Dict(lv => unique(mode_col[level_col .== lv]) for lv in levels)
+
+    # Tier sizes as the isolated sweeps saw them.  The tier markers and the
+    # candidate table trust them only if the all-cores sweep reached their sum,
+    # i.e. nothing was capped with max_threads.
+    tiers = sort([(minimum(lindex_col[level_col .== lv]), lv, maximum(threads_col[level_col .== lv]))
+                  for lv in levels if lv != "All"])
+    has_all = "All" in levels
+    all_uncapped = has_all && maximum(threads_col[level_col .== "All"]) == sum(t[3] for t in tiers)
 
     # ------------------------------------------------------------------ plot
     default(fontfamily="Helvetica", grid=true, gridcolor=GRIDC, gridalpha=1.0,
@@ -81,17 +113,17 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
                       legendfontcolor=INK2, framestyle=:axes,
                       background_color=:white, legend_background_color=:white,
                       legend_foreground_color=GRIDC, yscale=:log10,
-                      right_margin=50Plots.px)
+                      left_margin=6Plots.mm, right_margin=50Plots.px)
 
     plt_speedup = plot(size=(700, 400), legend=false,
-                       title="Parallel Speedup within Each Cluster",
+                       title="Parallel Speedup vs 1 Thread",
                        ylabel="speedup vs 1 thread", xlabel="threads",
                        grid=true, gridcolor=GRIDC, gridalpha=1.0,
                        foreground_color_axis=GRIDC, foreground_color_border=GRIDC,
                        tickfontcolor=INK2, guidefontcolor=INK2,
                        legendfontcolor=INK2, framestyle=:axes,
                        background_color=:white, legend_background_color=:white,
-                       legend_foreground_color=GRIDC)
+                       legend_foreground_color=GRIDC, left_margin=4Plots.mm)
 
     # Track baseline GFLOPS for ideal speedup lines
     baselines = Dict()
@@ -114,34 +146,43 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
             speedup = y ./ y[1]
 
             c = level_color(level)
+            mk = level_marker(level)
 
             peak_gflops = maximum(y)
-            baselines["$level"] = y[1]
+            baselines[level] = (y[1], maximum(x))
 
             # Plot throughput
-            plot!(plt_gflops, x, y, color=c, linewidth=2.5, marker=:circle,
+            plot!(plt_gflops, x, y, color=c, linewidth=2.5, marker=mk,
                   markersize=5, markerstrokecolor=:white, markerstrokewidth=1.5,
-                  label="$level: $(Int(round(peak_gflops))) GFLOPS")
+                  label="$(level == "All" ? "All cores" : level): $(Int(round(peak_gflops))) GFLOPS")
 
             # Plot speedup
-            plot!(plt_speedup, x, speedup, color=c, linewidth=2.5, marker=:circle,
+            plot!(plt_speedup, x, speedup, color=c, linewidth=2.5, marker=mk,
                   markersize=5, markerstrokecolor=:white, markerstrokewidth=1.5,
                   label="")
         end
     end
 
-    # Add ideal speedup lines to GFLOPS plot (dashed)
+    # Add ideal speedup lines to GFLOPS plot (dashed), each over its own tier's range
     max_threads = maximum(threads_col)
-    for (level, baseline) in baselines
+    for (level, (baseline, mx)) in baselines
         c = level_color(level)
-        ideal_gflops = baseline .* (1:max_threads)
-        plot!(plt_gflops, 1:max_threads, ideal_gflops, color=c, linewidth=1.5,
+        plot!(plt_gflops, 1:mx, baseline .* (1:mx), color=c, linewidth=1.5,
               linestyle=:dash, alpha=0.5, label="")
     end
 
     # Add perfect scaling reference to speedup plot
     plot!(plt_speedup, 1:max_threads, 1:max_threads, color=INK2, alpha=0.35,
           linestyle=:dot, linewidth=1.5, label="perfect scaling")
+
+    # On the all-cores curve, mark where each tier's cores run out (normal-QoS
+    # threads fill the fastest tier first).
+    if all_uncapped
+        for b in cumsum(getindex.(tiers, 3))[1:end-1]
+            vline!(plt_gflops, [b + 0.5], color=INK2, alpha=0.3, linestyle=:dot, linewidth=1.2, label="")
+            vline!(plt_speedup, [b + 0.5], color=INK2, alpha=0.3, linestyle=:dot, linewidth=1.2, label="")
+        end
+    end
 
     # Set axis limits
     xlims!(plt_gflops, (0.6, max_threads + 0.8))
@@ -151,6 +192,8 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
 
     xticks!(plt_gflops, 1:max_threads)
     xticks!(plt_speedup, 1:max_threads)
+    yt = log_ticks(min_gflops * 0.8, max_gflops * 1.2)
+    yticks!(plt_gflops, yt, string.(round.(Int, yt)))
 
     # Combine into single figure
     fig = plot(plt_gflops, plt_speedup, layout=grid(1, 2), size=(1400, 420), plot_title="")
@@ -176,13 +219,39 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
         println()
     end
 
+    # The question for LinearAlgebra's default: what does the whole machine give
+    # at each candidate thread count?  Candidates are the tier boundaries (fastest
+    # tier only, fastest two, ...), total-1 and total, plus the measured peak.
+    if has_all && !all_uncapped
+        println("  All cores: sweep was capped below the machine total, candidate table skipped")
+        println()
+    elseif has_all
+        sel = level_col .== "All"
+        x, y, ymed = threads_col[sel], gflops_col[sel], median_col[sel]
+        total = maximum(x)
+        candidates = Dict{Int,String}()
+        for k in 1:length(tiers)-1
+            candidates[sum(t[3] for t in tiers[1:k])] = join((t[2] for t in tiers[1:k]), "+") * " only"
+        end
+        candidates[total - 1] = get(candidates, total - 1, "") * " total-1"
+        candidates[total]     = "total"
+        candidates[x[argmax(y)]] = get(candidates, x[argmax(y)], "") * " peak"
+        println("  All cores (what BLAS.set_num_threads(n) gives):")
+        for k in sort(collect(keys(candidates)))
+            i = findfirst(==(k), x)
+            i === nothing && continue
+            @printf("    %2d threads  %8.1f GFLOPS best  %8.1f median   %s\n", k, y[i], ymed[i], strip(candidates[k]))
+        end
+        println()
+    end
+
     return fig
 end
 
 """
     load_results(file; level="") -> Vector of result rows
 
-Load a CSV and return rows with chip, level, threads, gflops.  A non-empty
+Load a CSV and return rows with chip, level index and name, threads, gflops.  A non-empty
 `level` keeps only rows from that perf level.
 """
 function load_results(file; level::AbstractString="")
@@ -191,6 +260,7 @@ function load_results(file; level::AbstractString="")
     rows = []
     for i in 1:size(raw, 1)
         chip = strip(raw[i, cols["chip"]])
+        level_ix = raw[i, cols["level_index"]]
         level_nm = strip(raw[i, cols["level_name"]])
         threads = raw[i, cols["threads"]]
         gflops = raw[i, cols["gflops_best"]]
@@ -203,10 +273,11 @@ function load_results(file; level::AbstractString="")
             continue
         end
 
+        level_ix = parse(Int, level_ix)
         threads = parse(Int, threads)
         gflops = parse(Float64, gflops)
 
-        push!(rows, (; chip, level_nm, threads, gflops))
+        push!(rows, (; chip, level_ix, level_nm, threads, gflops))
     end
     return rows
 end
@@ -245,11 +316,15 @@ function collate_results(infiles::AbstractVector{<:AbstractString};
             foreground_color_border=GRIDC, tickfontcolor=INK2,
             guidefontcolor=INK2, legendfontcolor=INK2, framestyle=:axes)
 
+    # One colour per chip, fixed across panels
+    chip_colors = Dict(chip => SERIES_COLORS[mod1(i, length(SERIES_COLORS))]
+                       for (i, chip) in enumerate(sort(unique_chips)))
+
     # Create one subplot pair (throughput + speedup) per level
     nlevel = length(unique_levels)
     plts = []
 
-    for lvl in sort(unique_levels)
+    for lvl in sort(unique_levels, by=level_rank)
         # Filter to this level's data across all chips
         subset = [r for r in allrows if r.level_nm == lvl]
         isempty(subset) && continue
@@ -286,7 +361,7 @@ function collate_results(infiles::AbstractVector{<:AbstractString};
 
             speedup = y ./ y[1]
 
-            c = SERIES_COLORS[mod1(chip_idx, length(SERIES_COLORS))]
+            c = chip_colors[chip]
 
             plot!(plt_top, x, y, color=c, linewidth=2, marker=:circle,
                   markersize=4, markerstrokecolor=:white, markerstrokewidth=1,
@@ -295,6 +370,11 @@ function collate_results(infiles::AbstractVector{<:AbstractString};
                   markersize=4, markerstrokecolor=:white, markerstrokewidth=1,
                   label="")
         end
+
+        ys = [r.gflops for r in subset]
+        ylims!(plt_top, (minimum(ys) * 0.8, maximum(ys) * 1.2))
+        yt = log_ticks(minimum(ys) * 0.8, maximum(ys) * 1.2)
+        yticks!(plt_top, yt, string.(round.(Int, yt)))
 
         # Add perfect scaling reference on speedup panel
         maxthreads = maximum(r.threads for r in subset)
@@ -313,7 +393,8 @@ function collate_results(infiles::AbstractVector{<:AbstractString};
     # Combine into grid
     fig = nothing
     if length(plts) > 0
-        fig = plot(plts..., layout=grid(nlevel, 2), size=(1000, 320*nlevel), plot_title="")
+        fig = plot(plts..., layout=grid(nlevel, 2), size=(1000, 320*nlevel), plot_title="",
+                   left_margin=6Plots.mm)
         savefig(fig, outbase * "_by_chip.png")
         savefig(fig, outbase * "_by_chip.svg")
         println("wrote ", outbase, "_by_chip.png/svg")
@@ -323,7 +404,7 @@ function collate_results(infiles::AbstractVector{<:AbstractString};
     println()
     println("Summary (peak GFLOPS by level/chip):")
     println()
-    for lvl in sort(unique_levels)
+    for lvl in sort(unique_levels, by=level_rank)
         println("  $lvl cores:")
         for chip in sort(unique_chips)
             subset = [r for r in allrows if r.chip == chip && r.level_nm == lvl]

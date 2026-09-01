@@ -1,10 +1,11 @@
-# Sweep orchestration for the OpenBLAS DGEMM efficiency/performance core sweep
-# on Apple silicon.
+# Sweep orchestration for the OpenBLAS DGEMM core-tier sweep on Apple silicon.
 #
-# Supports any number of perf levels (M1–M4 have 2: Performance + Efficiency;
-# M5+ has 3: Super + Performance + Efficiency).  For each level, measures
-# isolated throughput by setting OPENBLAS_NUM_THREADS to that level's core
-# count, and for E-cores uses background QoS to confine the process.
+# Works for any number of perf levels: M1–M4 report Performance + Efficiency,
+# M5 Pro/Max report Super + Performance (no Efficiency cores; the ten
+# Performance cores of an M5 Pro are two clusters of five), and M6 is expected
+# to add a third tier.  Each level is measured in isolation at normal QoS by
+# keeping every faster core busy with a spinner thread (see occupier.jl), and
+# an "all" mode uses the whole machine the way `BLAS.set_num_threads(n)` does.
 #
 # The CSV output includes chip identity and perf-level info so results can be
 # collated and compared across multiple architectures.
@@ -23,11 +24,12 @@ end
 """
     topology() -> (brand::String, levels::Vector{NamedTuple})
 
-Read the Apple silicon core topology.  `hw.perflevels` reports the number of
+Read the Apple silicon core topology.  `hw.nperflevels` reports the number of
 tiers; levels are indexed from 0 (fastest) upward.  Each level gives its name
-(Super, Performance, Efficiency) and logical core count.
+(Super, Performance, Efficiency), its logical core count and the number of
+cores per cluster (`cpusperl2`, the cores sharing one L2).
 
-Returns a list of (index, name, cores) tuples in order from fastest to slowest.
+Returns a list of (index, name, cores, cluster) tuples from fastest to slowest.
 """
 function topology()
     brand   = sysctl_str("machdep.cpu.brand_string")
@@ -35,9 +37,10 @@ function topology()
 
     levels = []
     for i in 0:(nlevels-1)
-        cores = sysctl("hw.perflevel$(i).logicalcpu")
-        name  = sysctl_str("hw.perflevel$(i).name")
-        cores > 0 && push!(levels, (; index=i, name, cores))
+        cores   = sysctl("hw.perflevel$(i).logicalcpu")
+        name    = sysctl_str("hw.perflevel$(i).name")
+        cluster = sysctl("hw.perflevel$(i).cpusperl2")
+        cores > 0 && push!(levels, (; index=i, name, cores, cluster))
     end
 
     return brand, levels
@@ -46,51 +49,97 @@ end
 """
     make_modes(levels) -> Dict{String, NamedTuple}
 
-Generate measurement modes for each perf level in isolation.
-Each mode tests only that level; the lowest level uses background QoS, which
-the scheduler confines to the most efficient cluster (whatever its name).
+Generate one mode per perf level plus `all`.  A level's mode sweeps 1 to that
+level's core count at normal QoS while the occupier keeps every faster core
+busy (`occupy` spinner threads), so the benchmark lands on the level under
+test.  `all` sweeps 1 to the total core count with nothing occupied, which is
+what `BLAS.set_num_threads(n)` gives a user.
 """
 function make_modes(levels)
-    modes = Dict()
-
-    # Each level in isolation
-    for (i, level) in enumerate(levels)
-        lix = i - 1  # 0-indexed level index
-        name = lowercase(level.name)
-        lowest = length(levels) > 1 && i == length(levels)
-        prefix = lowest ? ["taskpolicy", "-b"] : String[]
-        modes[name] = (
-            desc = "$(level.name) cores only ($(level.cores) cores), " *
-                   (lowest ? "background QoS" : "normal QoS"),
-            test_levels = [lix],  # only this level
-            max_threads_per_level = Dict(lix => level.cores),
-            taskpolicy_cmd = prefix,
+    modes = Dict{String,Any}()
+    faster = 0
+    for level in levels
+        modes[lowercase(level.name)] = (
+            desc = "$(level.name) cores only ($(level.cores) cores), normal QoS" *
+                   (faster > 0 ? ", $faster faster core$(faster == 1 ? "" : "s") kept busy" : ""),
+            level_index = level.index,
+            level_name  = level.name,
+            max_threads = level.cores,
+            occupy      = faster,
+        )
+        faster += level.cores
+    end
+    if length(levels) > 1
+        modes["all"] = (
+            desc = "all $faster cores, normal QoS (what BLAS.set_num_threads gives)",
+            level_index = -1,
+            level_name  = "All",
+            max_threads = faster,
+            occupy      = 0,
         )
     end
-
     return modes
 end
 
-const WORKER_FILE = joinpath(@__DIR__, "worker.jl")
+# Fastest level first, then all: the order the sweep runs and prints in.
+mode_order(levels, modes) =
+    filter(m -> haskey(modes, m), [[lowercase(l.name) for l in levels]; "all"])
+
+const WORKER_FILE   = joinpath(@__DIR__, "worker.jl")
+const OCCUPIER_FILE = joinpath(@__DIR__, "occupier.jl")
 
 """
-    run_point(modes, mode, nthreads, level_index, levels, chip, n, trials) -> String
+    start_occupier(ncores) -> Process or nothing
 
-Launch one worker process and return the CSV row it printed.  The worker only
-`include`s worker.jl (no package load) to keep startup light.
+Start `ncores` spinner threads at user-interactive QoS (see occupier.jl) and
+return the process once they are running; `nothing` when `ncores == 0`.
 """
-function run_point(modes, mode::AbstractString, nthreads::Int, level_index::Int,
-                   levels, chip::AbstractString, n::Int, trials::Int)
+function start_occupier(ncores::Int)
+    ncores > 0 || return nothing
+    code = "include($(repr(OCCUPIER_FILE))); occupier_main()"
+    proc = open(`$(Base.julia_cmd()) --startup-file=no -t $(ncores + 1) -e $code`, "r+")
+    line = Ref("")
+    reader = @async line[] = readline(proc)
+    if timedwait(() -> istaskdone(reader), 60.0) != :ok || line[] != "ready"
+        close(proc.in)  # the normal stop path; SIGKILL if the child never got that far
+        timedwait(() -> !process_running(proc), 5.0) == :ok || kill(proc, Base.SIGKILL)
+        error("occupier did not start (got $(repr(line[])))")
+    end
+    sleep(0.5)  # let the spinners settle onto the fast cores
+    return proc
+end
+
+"""
+    stop_occupier(proc)
+
+Close the occupier's stdin, which ends its spinners, and wait for it to exit.
+"""
+function stop_occupier(proc)
+    proc === nothing && return
+    close(proc.in)
+    wait(proc)
+end
+
+"""
+    run_point(mode, nthreads, m, chip, n, trials) -> String
+
+Launch one worker process for mode `m` (an entry of `make_modes`) and return
+the CSV row it printed.  The worker only `include`s worker.jl (no package
+load) to keep startup light.
+"""
+function run_point(mode::AbstractString, nthreads::Int, m, chip::AbstractString,
+                   n::Int, trials::Int)
     code = "include($(repr(WORKER_FILE))); worker_main()"
-    cmd = `$(modes[mode].taskpolicy_cmd) $(Base.julia_cmd()) --startup-file=no -e $code`
+    cmd = `$(Base.julia_cmd()) --startup-file=no -e $code`
     env = copy(ENV)
     env["BENCH_THREADS"]      = string(nthreads)
     env["BENCH_N"]            = string(n)
     env["BENCH_TRIALS"]       = string(trials)
     env["BENCH_MODE"]         = mode
     env["BENCH_CHIP"]         = chip
-    env["BENCH_LEVEL_INDEX"]  = string(level_index)
-    env["BENCH_LEVEL_NAME"]   = levels[level_index + 1].name
+    env["BENCH_LEVEL_INDEX"]  = string(m.level_index)
+    env["BENCH_LEVEL_NAME"]   = m.level_name
+    env["BENCH_OCCUPIED"]     = string(m.occupy)
     env["OPENBLAS_NUM_THREADS"] = string(nthreads)
     return strip(read(setenv(cmd, env), String))
 end
@@ -104,7 +153,7 @@ Run the DGEMM sweep on this machine's core topology and write results to `out`.
   - `n`: DGEMM matrix dimension
   - `trials`: timed DGEMM calls per point (best is reported)
   - `modes`: subset of modes to run (default: all; see `make_modes`)
-  - `max_threads`: highest thread count within each level (default: level's core count)
+  - `max_threads`: highest thread count within each mode (default: the mode's core count)
   - `plot`: run `plot_results` on the output when done
 
 Returns the output path.
@@ -112,60 +161,58 @@ Returns the output path.
 function sweep(; n::Integer=2048, trials::Integer=5, out::AbstractString="results.csv",
                modes=nothing, max_threads=nothing, plot::Bool=true)
     brand, levels = topology()
-    chip = brand  # e.g., "Apple M1 Pro", "Apple M6 Max"
+    chip = brand  # e.g., "Apple M1 Pro", "Apple M5 Pro"
     total_cores = sum(l.cores for l in levels)
 
     allmodes = make_modes(levels)
-    selected = modes === nothing ? sort(collect(keys(allmodes))) : String.(collect(modes))
+    order = mode_order(levels, allmodes)
+    selected = modes === nothing ? order : String.(collect(modes))
     for m in selected
-        haskey(allmodes, m) || error("unknown mode $(repr(m)); choose from $(join(sort(collect(keys(allmodes))), ", "))")
+        haskey(allmodes, m) || error("unknown mode $(repr(m)); choose from $(join(order, ", "))")
     end
 
     println("╭─ host")
     println("│  chip:         ", chip)
-    println("│  brand:        ", brand)
     println("│  total:        ", total_cores, " cores")
     for level in levels
-        @printf("│    level %d:    %2d × %s\n", level.index, level.cores, level.name)
+        nclusters = level.cluster > 0 ? cld(level.cores, level.cluster) : 1
+        @printf("│    level %d:    %2d × %-12s (%d cluster%s of %d)\n", level.index, level.cores,
+                level.name, nclusters, nclusters == 1 ? "" : "s", level.cluster)
     end
     println("├─ problem")
     @printf("│  DGEMM %d×%d Float64, best of %d trials\n", n, n, trials)
     println("│")
     println("├─ modes")
-    for mode in sort(collect(keys(allmodes)))
+    for mode in order
         println("│    $mode:")
         println("│      ", allmodes[mode].desc)
     end
     println("│")
     println("├─ results → ", out)
-    println("│")
 
     open(out, "w") do io
         # CSV header
-        println(io, "chip,level_index,level_name,mode,threads,n,trials,gflops_best,gflops_median,wall_s")
+        println(io, "chip,level_index,level_name,mode,threads,n,trials,gflops_best,gflops_median,wall_s,occupied")
 
         for mode in selected
+            m = allmodes[mode]
             @printf("│\n│  %s\n", mode)
-            @printf("│  %s\n", allmodes[mode].desc)
+            @printf("│  %s\n", m.desc)
+            println(io)  # blank line in CSV before each mode's results
 
-            # For each level this mode tests
-            for lix in allmodes[mode].test_levels
-                level = levels[lix + 1]  # Julia arrays are 1-indexed
-                max_t = allmodes[mode].max_threads_per_level[lix]
-
-                @printf("│    %-12s  ", level.name)
-                println(io)  # blank line in CSV before each level's results
-
-                # Sweep thread count from 1 to min(max_t, max_threads)
-                maxthreads = max_threads === nothing ? max_t : min(max_t, Int(max_threads))
+            maxthreads = max_threads === nothing ? m.max_threads : min(m.max_threads, Int(max_threads))
+            occ = start_occupier(m.occupy)
+            try
                 for nt in 1:maxthreads
-                    row = run_point(allmodes, mode, nt, lix, levels, chip, Int(n), Int(trials))
+                    row = run_point(mode, nt, m, chip, Int(n), Int(trials))
                     println(io, row); flush(io)
                     f = split(row, ',')
                     best, med = parse(Float64, f[8]), parse(Float64, f[9])
-                    @printf("│      %2d thr  %8.1f GFLOPS  %8.1f med  %6.1f GF/thr\n",
+                    @printf("│    %2d thr  %8.1f GFLOPS  %8.1f med  %6.1f GF/thr\n",
                             nt, best, med, best / nt)
                 end
+            finally
+                stop_occupier(occ)
             end
         end
     end

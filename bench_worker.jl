@@ -1,8 +1,8 @@
 #!/usr/bin/env julia
 #
-# Worker process for the E-core/P-core/Super-core DGEMM sweep.
+# Worker process for the Apple silicon core-tier DGEMM sweep.
 #
-# Runs a single (nthreads, QoS-mode, perf-level) measurement point and prints
+# Runs a single (nthreads, perf-level) measurement point and prints
 # one CSV row on stdout.  Configuration comes from the BENCH_* environment
 # variables documented in src/worker.jl.
 #
