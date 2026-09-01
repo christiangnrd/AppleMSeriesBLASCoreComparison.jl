@@ -47,7 +47,8 @@ end
     make_modes(levels) -> Dict{String, NamedTuple}
 
 Generate measurement modes for each perf level in isolation.
-Each mode tests only that level and uses appropriate QoS.
+Each mode tests only that level; the lowest level uses background QoS, which
+the scheduler confines to the most efficient cluster (whatever its name).
 """
 function make_modes(levels)
     modes = Dict()
@@ -56,10 +57,11 @@ function make_modes(levels)
     for (i, level) in enumerate(levels)
         lix = i - 1  # 0-indexed level index
         name = lowercase(level.name)
-        prefix = name == "efficiency" ? ["taskpolicy", "-b"] : String[]
+        lowest = length(levels) > 1 && i == length(levels)
+        prefix = lowest ? ["taskpolicy", "-b"] : String[]
         modes[name] = (
             desc = "$(level.name) cores only ($(level.cores) cores), " *
-                   (name == "efficiency" ? "background QoS" : "normal QoS"),
+                   (lowest ? "background QoS" : "normal QoS"),
             test_levels = [lix],  # only this level
             max_threads_per_level = Dict(lix => level.cores),
             taskpolicy_cmd = prefix,
