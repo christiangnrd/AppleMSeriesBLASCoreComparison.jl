@@ -6,7 +6,7 @@ using DelimitedFiles
 
 # ---------------------------------------------------------------- palette
 const LEVEL_COLOR = Dict(
-    "Super"       => "#4a3aa7",  # purple
+    "Super"       => "#b0399a",  # magenta
     "Performance" => "#2a78d6",  # blue
     "Efficiency"  => "#eb6834",  # orange
 )
