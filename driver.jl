@@ -8,7 +8,7 @@
 #     --n=2048            DGEMM matrix dimension
 #     --trials=5          timed DGEMM calls per point (best is reported)
 #     --max-threads=N     highest thread count within each level (default: level's core count)
-#     --modes=a,b         subset of modes (see topology output)
+#     --modes=a,b         subset of modes, e.g. super,all (see topology output)
 #     --out=results.csv   where to write the results
 #     --no-plot           skip the plotting step
 
