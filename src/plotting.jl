@@ -179,11 +179,12 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
         end
     end
 
-    # Add ideal speedup lines to GFLOPS plot (dashed), each over its own tier's range
+    # Add ideal speedup lines to GFLOPS plot (dashed), each extended over the
+    # full thread range so tiers can be compared against the whole machine
     max_threads = maximum(threads_col)
-    for (level, (baseline, mx)) in baselines
+    for (level, (baseline, _)) in baselines
         c = colors[level]
-        plot!(plt_gflops, 1:mx, baseline .* (1:mx), color=c, linewidth=1.5,
+        plot!(plt_gflops, 1:max_threads, baseline .* (1:max_threads), color=c, linewidth=1.5,
               linestyle=:dash, alpha=0.5, label="")
     end
 
@@ -203,12 +204,15 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
     # Set axis limits
     xlims!(plt_gflops, (0.6, max_threads + 0.8))
     xlims!(plt_speedup, (0.6, max_threads + 0.8))
-    ylims!(plt_gflops, (min_gflops * 0.8, max_gflops * 1.2))
+    # Include the extended ideal lines in the y range so they are not clipped
+    max_ideal = maximum(b for (b, _) in values(baselines); init=0.0) * max_threads
+    y_top = max(max_gflops, max_ideal) * 1.2
+    ylims!(plt_gflops, (min_gflops * 0.8, y_top))
     ylims!(plt_speedup, (0.8, max_speedup_val * 1.1))
 
     xticks!(plt_gflops, 1:max_threads)
     xticks!(plt_speedup, 1:max_threads)
-    yt = log_ticks(min_gflops * 0.8, max_gflops * 1.2)
+    yt = log_ticks(min_gflops * 0.8, y_top)
     yticks!(plt_gflops, yt, string.(round.(Int, yt)))
 
     # Combine into single figure
