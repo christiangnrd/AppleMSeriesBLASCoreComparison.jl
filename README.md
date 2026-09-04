@@ -135,6 +135,48 @@ with both `OPENBLAS_NUM_THREADS` and `BLAS.set_num_threads` set), so no leftover
 threads from a previous point interfere. A 512×512 warm-up absorbs thread
 creation and migration onto the target cores before timing starts.
 
+### Other platforms and supplying the tiers yourself
+
+Only macOS reports core tiers. Anywhere else, or to try a different split on
+any machine, pass the tiers yourself with `--levels`, fastest tier first:
+
+```bash
+# Intel hybrid: 8 P-cores (16 threads) on cpus 0-15, 8 E-cores on cpus 16-23
+julia --project=. driver.jl --levels=Performance:8:0-15,Efficiency:8:16-23 --chip="Core i9-13900K"
+
+# ARM big.LITTLE, cpu lists omitted: tiers are named and sized but not pinned
+julia --project=. driver.jl --levels=big:4,LITTLE:4
+```
+
+Each tier is `name:cores[:cpus]`:
+
+| Field | Meaning | Examples |
+|---|---|---|
+| `name` | tier name; becomes the mode name and the CSV `level_name` | `Performance`, `big` |
+| `cores` | thread count the tier's sweep goes up to | `8` |
+| `cpus` | optional, the cpus the tier consists of, `taskset` syntax with `+` instead of `,` | `0-7`, `0+2+4+6`, `0-3+8-11` |
+
+The same override works from Julia, as the spec string or as named tuples
+(`cpus` may be a string, a range or a vector):
+
+```julia
+sweep(levels="Performance:8:0-15,Efficiency:8:16-23", chip="Core i9-13900K")
+sweep(levels=[(name="big", cores=4, cpus=4:7), (name="LITTLE", cores=4, cpus=0:3)])
+```
+
+How tiers are isolated depends on the platform:
+
+- **Linux**: a tier with a cpu list is pinned to it with `taskset`. A tier
+  without one is not isolated and runs wherever the scheduler puts it (the
+  mode description says so). The `all` mode is never pinned. Without
+  `--levels`, the sweep sees one `Performance` tier of all logical cpus.
+- **macOS**: the occupier isolates lower tiers as described above. Cpu lists
+  are ignored with a warning, since macOS has no affinity API.
+
+Any tier names work: `plot_results` orders tiers by level index and gives
+unfamiliar names their own colours. Reusing `Super`, `Performance` and
+`Efficiency` keeps results comparable with the Apple ones in `collate_results`.
+
 ## Usage
 
 ```bash
@@ -177,6 +219,8 @@ collate_results(["results-m1.csv", "results-m5pro.csv"]; level="Performance")
 - `--max-threads=N`: cap the thread count within each mode
 - `--out=results.csv`: where to write results
 - `--no-plot`: skip the plotting step
+- `--levels=name:cores[:cpus],...`: supply the core tiers instead of detecting them (see above)
+- `--chip=NAME`: chip label written to the CSV (default: detected)
 
 **collate_results.jl:**
 - `--out=base`: output filename base (default: dgemm_collated)
@@ -186,9 +230,9 @@ collate_results(["results-m1.csv", "results-m5pro.csv"]; level="Performance")
 
 | File | Purpose |
 |---|---|
-| `src/sweep.jl` | `topology`, `make_modes`, `sweep`; launches the occupier and one worker per point |
+| `src/sweep.jl` | `topology`, `parse_levels`, `make_modes`, `sweep`; launches the occupier (or `taskset`) and one worker per point |
 | `src/worker.jl` | One measurement point: times DGEMM, prints a CSV row (stdlib-only) |
-| `src/occupier.jl` | Spinner threads at user-interactive QoS that hold the faster cores |
+| `src/occupier.jl` | Spinner threads at user-interactive QoS that hold the faster cores (macOS) |
 | `src/plotting.jl` | `plot_results` (one chip) and `collate_results` (many chips) |
 | `driver.jl`, `plot_results.jl`, `collate_results.jl`, `bench_worker.jl` | CLI wrappers |
 | `results-m5pro.csv`, `results-m1.csv`, `results-m1pro.csv` | Saved sweeps |

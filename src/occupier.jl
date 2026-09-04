@@ -28,8 +28,10 @@ function occupier_main()
             read(stdin)                 # returns when the parent closes the pipe
             stop[] = true
         else
-            ccall(:pthread_set_qos_class_self_np, Cint, (Cuint, Cint),
-                  QOS_CLASS_USER_INTERACTIVE, 0)
+            # QoS classes exist only on macOS; elsewhere the spinner is a plain
+            # thread (the sweep does not use the occupier there, see make_modes).
+            Sys.isapple() && ccall(:pthread_set_qos_class_self_np, Cint, (Cuint, Cint),
+                                   QOS_CLASS_USER_INTERACTIVE, 0)
             x = UInt64(i)
             while !stop[]
                 for _ in 1:2000

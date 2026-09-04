@@ -17,6 +17,18 @@ const LEVEL_COLOR = Dict(
 level_color(level)  = get(LEVEL_COLOR, level, "#1baf7a")  # aqua for unknown tiers
 level_marker(level) = level == "All" ? :diamond : :circle
 
+# Colours for the tiers of one plot: the fixed hue for known names, successive
+# spare palette entries for anything else (user-supplied tiers such as
+# "big"/"LITTLE"), so two custom tiers never share a colour.
+function level_colors(levels)
+    spare = filter(c -> !(c in values(LEVEL_COLOR)), SERIES_COLORS)
+    colors, k = Dict{String,String}(), 0
+    for lv in levels
+        colors[lv] = haskey(LEVEL_COLOR, lv) ? LEVEL_COLOR[lv] : spare[mod1(k += 1, length(spare))]
+    end
+    return colors
+end
+
 # Tier order for legends and panels: fastest first, the whole machine last.
 const LEVEL_ORDER = Dict("Super" => 0, "Performance" => 1, "Efficiency" => 2, "All" => 9)
 level_rank(level) = (get(LEVEL_ORDER, level, 5), level)
@@ -70,7 +82,11 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
     gflops_col  = gflops_col[valid]
     median_col  = median_col[valid]
 
-    levels = sort(unique(level_col), by=level_rank)
+    # Tier order as the sweep recorded it (level index 0 = fastest), so custom
+    # tier names sort correctly too; the whole machine goes last.
+    first_index = Dict(lv => minimum(lindex_col[level_col .== lv]) for lv in unique(level_col))
+    levels = sort(unique(level_col), by = lv -> (lv == "All" ? typemax(Int) : first_index[lv], lv))
+    colors = level_colors(levels)
     modes_per_level = Dict(lv => unique(mode_col[level_col .== lv]) for lv in levels)
 
     # Tier sizes as the isolated sweeps saw them.  The tier markers and the
@@ -145,7 +161,7 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
 
             speedup = y ./ y[1]
 
-            c = level_color(level)
+            c = colors[level]
             mk = level_marker(level)
 
             peak_gflops = maximum(y)
@@ -166,7 +182,7 @@ function plot_results(infile::AbstractString="results.csv"; outbase::AbstractStr
     # Add ideal speedup lines to GFLOPS plot (dashed), each over its own tier's range
     max_threads = maximum(threads_col)
     for (level, (baseline, mx)) in baselines
-        c = level_color(level)
+        c = colors[level]
         plot!(plt_gflops, 1:mx, baseline .* (1:mx), color=c, linewidth=1.5,
               linestyle=:dash, alpha=0.5, label="")
     end
