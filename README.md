@@ -135,10 +135,25 @@ with both `OPENBLAS_NUM_THREADS` and `BLAS.set_num_threads` set), so no leftover
 threads from a previous point interfere. A 512×512 warm-up absorbs thread
 creation and migration onto the target cores before timing starts.
 
+### Linux
+
+On Linux the tiers are detected from sysfs (`/sys/devices/system/cpu`). Online
+cpus are grouped by core identity, using the arm64 MIDR part number when every
+cpu reports one, otherwise the scheduler's `cpu_capacity`, otherwise the
+`cpufreq` maximum frequency. Groups are ranked by `cpu_capacity` (then max
+frequency), named `Performance`/`Efficiency` for two tiers and
+`Super`/`Performance`/`Efficiency` for three, and each carries the cpu list it
+consists of, so every tier is pinned with `taskset` without further setup. The
+cluster size comes from `cluster_id` (or the shared L2). On an M2 Max under
+Asahi Linux this gives `Performance: 8 cores, cpus 4-11` and
+`Efficiency: 4 cores, cpus 0-3`. A machine with a single core type falls back
+to one `Performance` tier of all logical cpus, unpinned.
+
 ### Other platforms and supplying the tiers yourself
 
-Only macOS reports core tiers. Anywhere else, or to try a different split on
-any machine, pass the tiers yourself with `--levels`, fastest tier first:
+Only macOS and Linux report core tiers. Anywhere else, or to try a different
+split on any machine, pass the tiers yourself with `--levels`, fastest tier
+first:
 
 ```bash
 # Intel hybrid: 8 P-cores (16 threads) on cpus 0-15, 8 E-cores on cpus 16-23
@@ -166,10 +181,10 @@ sweep(levels=[(name="big", cores=4, cpus=4:7), (name="LITTLE", cores=4, cpus=0:3
 
 How tiers are isolated depends on the platform:
 
-- **Linux**: a tier with a cpu list is pinned to it with `taskset`. A tier
-  without one is not isolated and runs wherever the scheduler puts it (the
-  mode description says so). The `all` mode is never pinned. Without
-  `--levels`, the sweep sees one `Performance` tier of all logical cpus.
+- **Linux**: a tier with a cpu list is pinned to it with `taskset` (detected
+  tiers always have one). A tier given without one is not isolated and runs
+  wherever the scheduler puts it (the mode description says so). The `all`
+  mode is never pinned.
 - **macOS**: the occupier isolates lower tiers as described above. Cpu lists
   are ignored with a warning, since macOS has no affinity API.
 

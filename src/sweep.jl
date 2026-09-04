@@ -8,11 +8,15 @@
 # spinner thread (see occupier.jl), and an "all" mode uses the whole machine
 # the way `BLAS.set_num_threads(n)` does.
 #
-# Other systems report no tiers, so detection falls back to one tier of
-# `Sys.CPU_THREADS` cores.  The caller can supply the tiers instead
-# (`sweep(levels=...)`, `driver.jl --levels=...`); a tier given with a cpu list
-# is isolated on Linux by pinning the benchmark to it with `taskset`, which
-# takes the place of the occupier there.
+# On Linux the topology comes from sysfs: cpus are grouped by core identity
+# (MIDR part number on arm64, else the scheduler's cpu_capacity, else max
+# frequency), ranked by cpu_capacity, and each tier carries the cpu list it
+# consists of.  A tier with a cpu list is isolated by pinning the benchmark to
+# it with `taskset`, which takes the place of the occupier there.
+#
+# Anywhere else, or when Linux exposes a single core type, detection falls
+# back to one tier of `Sys.CPU_THREADS` cores.  The caller can supply the
+# tiers instead (`sweep(levels=...)`, `driver.jl --levels=...`).
 #
 # The CSV output includes chip identity and perf-level info so results can be
 # collated and compared across multiple architectures.
@@ -38,9 +42,10 @@ the tier is pinned to (`nothing` unless supplied).
 
 Detection: on Apple silicon `hw.nperflevels` gives the number of tiers and
 `hw.perflevelN.{name,logicalcpu,cpusperl2}` each tier's name, core count and
-cluster size.  Other systems report no tiers, so the result is a single
-`Performance` level of `Sys.CPU_THREADS` cores, with the chip name taken from
-`/proc/cpuinfo` on Linux.
+cluster size.  On Linux the tiers come from sysfs (see [`linux_topology`](@ref))
+and each carries the cpu list it is pinned to.  Other systems, and Linux
+machines with one core type, get a single `Performance` level of
+`Sys.CPU_THREADS` cores.
 
 Overrides: `levels` replaces detection entirely and is either a spec string
 (see [`parse_levels`](@ref)) or a vector of named tuples with `name` and
@@ -49,7 +54,8 @@ Overrides: `levels` replaces detection entirely and is either a spec string
 """
 function topology(; chip=nothing, levels=nothing)
     if levels === nothing
-        brand, lv = Sys.isapple() ? apple_topology() : generic_topology()
+        brand, lv = Sys.isapple() ? apple_topology() :
+                    Sys.islinux() ? linux_topology() : generic_topology()
         isempty(lv) && ((brand, lv) = generic_topology())
     else
         brand, lv = detect_chip(), normalize_levels(levels)
@@ -78,11 +84,114 @@ end
 generic_topology() =
     detect_chip(), [(; index=0, name="Performance", cores=Sys.CPU_THREADS, cluster=0, cpus=nothing)]
 
+const SYSFS_CPU = "/sys/devices/system/cpu"
+
+sysfs_read(path) = try strip(read(path, String)) catch; "" end
+sysfs_int(path)  = something(tryparse(Int, sysfs_read(path)), -1)   # handles 0x... too
+
+# Expand a sysfs cpu list ("0-3,8") to cpu numbers.
+function expand_cpu_list(list::AbstractString)
+    cpus = Int[]
+    for part in split(list, ',')
+        m = match(r"^\s*(\d+)(?:-(\d+))?\s*$", part)
+        m === nothing && continue
+        lo = parse(Int, m.captures[1])
+        hi = m.captures[2] === nothing ? lo : parse(Int, m.captures[2])
+        append!(cpus, lo:hi)
+    end
+    return cpus
+end
+
+# Compress cpu numbers to taskset syntax ([0,1,2,3,8] -> "0-3,8").
+function compress_cpu_list(cpus)
+    cpus, parts, i = sort(unique(cpus)), String[], 1
+    while i <= length(cpus)
+        j = i
+        while j < length(cpus) && cpus[j+1] == cpus[j] + 1
+            j += 1
+        end
+        push!(parts, i == j ? string(cpus[i]) : "$(cpus[i])-$(cpus[j])")
+        i = j + 1
+    end
+    return join(parts, ",")
+end
+
+# Tier names by count, fastest first: the Apple names so colours and collation
+# line up, generic ones beyond three tiers.
+tier_names(n) = n == 1 ? ["Performance"] :
+                n == 2 ? ["Performance", "Efficiency"] :
+                n == 3 ? ["Super", "Performance", "Efficiency"] :
+                ["Tier$i" for i in 0:n-1]
+
+"""
+    linux_topology() -> (chip::String, levels::Vector{NamedTuple})
+
+Core tiers from sysfs (`/sys/devices/system/cpu`), online cpus only.
+
+Cpus are grouped by core identity: the MIDR implementer and part number
+(`regs/identification/midr_el1`, arm64) when every cpu reports one, otherwise
+the scheduler's `cpu_capacity`, otherwise `cpufreq` max frequency.  Groups are
+ranked fastest first by `cpu_capacity`, then by max frequency; groups that tie
+are merged.  Each tier's `cores` is its logical cpu count (SMT siblings count
+separately, as in `Sys.CPU_THREADS`), `cluster` the cpus per `cluster_id` (or
+per shared L2) when all its clusters are the same size, and `cpus` the
+`taskset` list the tier is pinned to.  Tiers are named `Performance` /
+`Efficiency` (two), `Super` / `Performance` / `Efficiency` (three), or
+`Tier0`, `Tier1`, ... beyond that.
+
+Returns no levels when sysfs is missing, only one core type is found, or the
+groups cannot be ranked, so [`topology`](@ref) falls back to one tier of every
+logical cpu.
+"""
+function linux_topology()
+    brand  = detect_chip()
+    online = expand_cpu_list(sysfs_read("$SYSFS_CPU/online"))
+    isempty(online) && return brand, []
+
+    info = map(online) do c
+        d    = "$SYSFS_CPU/cpu$c"
+        midr = sysfs_int("$d/regs/identification/midr_el1")
+        (; cpu      = c,
+           part     = midr < 0 ? -1 : Int(midr & 0xff00fff0),   # implementer + part, drop variant/revision
+           capacity = sysfs_int("$d/cpu_capacity"),
+           maxfreq  = max(sysfs_int("$d/cpufreq/cpuinfo_max_freq"), sysfs_int("$d/cpufreq/scaling_max_freq")),
+           cluster  = sysfs_int("$d/topology/cluster_id"),
+           l2       = sysfs_read("$d/cache/index2/shared_cpu_list"))
+    end
+
+    identity = all(i -> i.part >= 0, info)     ? (i -> i.part) :
+               all(i -> i.capacity >= 0, info) ? (i -> i.capacity) :
+               all(i -> i.maxfreq > 0, info)   ? (i -> i.maxfreq) : nothing
+    identity === nothing && return brand, []
+    groups = [filter(i -> identity(i) == k, info) for k in unique(identity.(info))]
+
+    # Rank by what the scheduler ranks by; merge groups that cannot be told apart.
+    speed(g) = (maximum(i.capacity for i in g), maximum(i.maxfreq for i in g))
+    all(g -> speed(g) > (-1, 0), groups) || return brand, []
+    merged = Dict{Tuple{Int,Int},Vector{eltype(info)}}()
+    for g in groups
+        append!(get!(merged, speed(g), eltype(info)[]), g)
+    end
+    ranked = [merged[k] for k in sort(collect(keys(merged)), rev=true)]
+    length(ranked) >= 2 || return brand, []
+
+    levels = []
+    for (i, (name, g)) in enumerate(zip(tier_names(length(ranked)), ranked))
+        clusterkey(c) = c.cluster >= 0 ? string(c.cluster) : c.l2
+        sizes = [count(c -> clusterkey(c) == k, g) for k in unique(clusterkey.(g))]
+        cluster = (all(c -> !isempty(clusterkey(c)), g) && length(unique(sizes)) == 1) ? sizes[1] : 0
+        push!(levels, (; index=i-1, name, cores=length(g), cluster,
+                         cpus=compress_cpu_list(c.cpu for c in g)))
+    end
+    return brand, levels
+end
+
 """
     detect_chip() -> String
 
-Best-effort chip label: `machdep.cpu.brand_string` on macOS, the `model name`
-(x86) or `Model`/`Hardware` (ARM boards) line of `/proc/cpuinfo` on Linux,
+Best-effort chip label: `machdep.cpu.brand_string` on macOS; on Linux the
+`model name` (x86) or `Model`/`Hardware` (ARM boards) line of `/proc/cpuinfo`,
+else the device-tree `model` (arm64 boards such as Apple silicon under Asahi);
 otherwise what `Sys.cpu_info` reports; `"unknown"` if none of those work.
 """
 function detect_chip()
@@ -95,6 +204,11 @@ function detect_chip()
             m === nothing && continue
             name = strip(m.captures[2])
             break
+        end
+        if isempty(name)   # arm64 boards: the device-tree model, e.g. Apple silicon under Asahi
+            model = replace(sysfs_read("/proc/device-tree/model"), '\0' => "")
+            m = match(r"\bM\d+(?: (?:Pro|Max|Ultra))?\b", model)
+            name = m === nothing ? model : "Apple " * m.match
         end
     end
     if isempty(name)

@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 #
-# Driver for the OpenBLAS DGEMM core-tier sweep (Apple silicon, or any
+# Driver for the OpenBLAS DGEMM core-tier sweep (Apple silicon, Linux, or any
 # machine with --levels).  Thin CLI wrapper around AppleMSeriesBLASCoreComparison.sweep.
 #
 # Usage:
@@ -15,7 +15,8 @@
 #                         first, as name:cores[:cpus],...  e.g.
 #                         --levels=Performance:8:0-15,Efficiency:8:16-23
 #                         (cpu lists use + for unions: 0-3+8-11; on Linux the
-#                         benchmark is pinned to them with taskset)
+#                         benchmark is pinned to them with taskset; Linux tiers
+#                         are otherwise detected from sysfs, cpu lists included)
 #     --chip=NAME         chip label written to the CSV (default: detected)
 
 using AppleMSeriesBLASCoreComparison
